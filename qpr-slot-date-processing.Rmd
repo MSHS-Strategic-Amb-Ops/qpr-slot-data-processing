@@ -1,0 +1,85 @@
+---
+title: "qpr-slot-data-processing"
+author: "Riya"
+date: "2024-08-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(glue)
+library(odbc)
+library(tidyverse)
+library(DBI)
+library(pool)
+
+
+## creating qpr slot processing table
+
+qpr_slot_table_drop <- glue("DROP TABLE PROD_QPR_SLOT")
+qpr_slot_table_query <- glue("CREATE TABLE PROD_QPR_SLOT AS
+                              SELECT e.*,
+                              CASE WHEN e.DEPT_MANAGED_PROV_MAP IS NOT NULL THEN e.DEPT_MANAGED_PROV_MAP
+                                   WHEN e.DEPT_MANAGED_PROV_MAP IS NULL AND e.DEPT_MANAGED_DEPT_MAP IS NOT NULL THEN e.DEPT_MANAGED_DEPT_MAP
+                                   ELSE e.DEPT_MANAGED_DEPT_MAP 
+                              END AS DEPT_MANAGED_FINAL,
+                              CASE WHEN e.SITE_PROV_MAP IS NOT NULL THEN e.SITE_PROV_MAP
+                                   WHEN e.SITE_PROV_MAP IS NULL AND e.SITE_DEPT_MAP IS NOT NULL THEN e.SITE_DEPT_MAP
+                                   WHEN e.SITE_PROV_MAP IS NULL AND e.SITE_DEPT_MAP IS NULL THEN e.CAMPUS
+                                   ELSE e.CAMPUS
+                              END AS SITE_FINAL,
+                              CASE WHEN e.OFFICE_PROCEDURE_PROV_MAP IS NOT NULL THEN e.OFFICE_PROCEDURE_PROV_MAP
+                                   WHEN e.OFFICE_PROCEDURE_PROV_MAP IS NULL AND e.OFFICE_PROCEDURE_DEPT_MAP IS NOT NULL THEN e.OFFICE_PROCEDURE_DEPT_MAP
+                              ELSE e.OFFICE_PROCEDURE_DEPT_MAP
+                              END AS OFFICE_PROCEDURE_FINAL,
+                              CASE WHEN e.CLINICAL_DEPT_PROV_MAP_ORG IS NOT NULL THEN e.CLINICAL_DEPT_PROV_MAP_ORG
+                                   WHEN e.CLINICAL_DEPT_PROV_MAP_ORG IS NULL AND e.CLINICAL_DEPT_DEPT_MAP_ORG IS NOT NULL THEN e.CLINICAL_DEPT_DEPT_MAP_ORG
+                                   ELSE e.CLINICAL_DEPT_DEPT_MAP_ORG
+                              END AS CLINICAL_DEPT_DEPT_MAP,
+                              CASE WHEN e.CLINICAL_SUB_DEPT_PROV_MAP_ORG IS NOT NULL THEN e.CLINICAL_SUB_DEPT_PROV_MAP_ORG 
+                                   WHEN e.CLINICAL_SUB_DEPT_PROV_MAP_ORG IS NULL AND e.CLINICAL_SUB_DEPT_DEPT_MAP_ORG IS NOT NULL THEN 
+                                   e.CLINICAL_SUB_DEPT_DEPT_MAP_ORG
+                                   ELSE e.CLINICAL_SUB_DEPT_DEPT_MAP_ORG
+                              END AS CLINICAL_SUB_DEPT_DEPT_MAP,
+                              TRUNC(SYSDATE) AS LAST_UPDATED
+                              FROM
+                              (SELECT c.*, d.DEPT_MANAGED_PROV_MAP, d.SITE_PROV_MAP, d.OFFICE_PROCEDURE_PROV_MAP, d.CLINICAL_DEPT_PROV_MAP_ORG, 
+                              d.CLINICAL_SUB_DEPT_PROV_MAP_ORG
+                              FROM
+                              (SELECT a.*, b.CLINICAL_DEPT_DEPT_MAP_ORG,
+                              b.CLINICAL_SUB_DEPT_DEPT_MAP_ORG, b.DEPT_MANAGED_DEPT_MAP, b.OFFICE_PROCEDURE_DEPT_MAP,
+                              b.SITE_DEPT_MAP
+                              FROM
+                              (SELECT * FROM OAO_PRODUCTION.AMBULATORY_SLOT_TABLE) a
+                              LEFT JOIN
+                              (SELECT * FROM MASTER_AMB_MAPPING) b
+                              ON a.DEPARTMENT_ID = b.DEPARTMENT_ID) c
+                              LEFT JOIN
+                              (SELECT * FROM MASTER_AMB_MAPPING_PROV) d
+                              ON c.DEPARTMENT_ID = d.DEPARTMENT_ID AND
+                              c.NPI = c.NPI) e
+                             ;")
+
+
+qpr_slot_table_index <- glue("CREATE index qpr_slot_table_index on PROD_QPR_SLOT (DEPARTMENT_ID, CAMPUS)")
+
+## Grouped Table execution
+tryCatch({
+  conn1 <- dbConnect(drv = odbc(), "OAO Cloud DB SoYoun", timeout = 30)
+  dbBegin(conn1)
+  if(dbExistsTable(conn1, "PROD_QPR_SLOT")){
+  dbExecute(conn1, qpr_slot_table_drop) 
+  }
+  dbExecute(conn1, qpr_slot_table_query) 
+  dbExecute(conn1, qpr_slot_table_index)
+  
+  dbCommit(conn1)
+  dbDisconnect(conn1)
+  print("success")
+  
+},
+error = function(err){
+  print(paste("Error staging:", err$message))
+  dbRollback(conn1)
+  dbDisconnect(conn1)
+})
